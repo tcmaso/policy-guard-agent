@@ -26,19 +26,15 @@ TOOL_HANDLERS = {
 # Explicit argument allowlist. This is what stops the model passing an amount or a
 # security-review flag into the authoritative evaluator.
 #
-# The authoritative evaluator accepts nothing at all. Its transaction is bound from
-# the request in _run_tool, and the governing policy follows deterministically from
-# that transaction's category, so there is no input left for the model to influence.
-# get_policy_rules still takes model-chosen arguments, but it is a read-only lookup
-# that feeds the explanation, never the decision.
+# Every entry is empty, and that is the design rather than an oversight. Each tool's
+# arguments are determined entirely by the transaction under assessment, which is
+# fixed by the caller's request — so there is nothing left for the model to supply,
+# and anything it does supply is refused rather than silently ignored.
 TOOL_ARGUMENTS = {
     "get_transaction": set(),
-    "get_policy_rules": {"category", "policy_id"},
+    "get_policy_rules": set(),
     "evaluate_transaction": set(),
 }
-
-# Arguments bound server-side from the request, never from the model.
-BOUND_ARGUMENTS = {"get_transaction", "evaluate_transaction"}
 
 TOOL_SPECS = [
     {
@@ -55,21 +51,11 @@ TOOL_SPECS = [
         "toolSpec": {
             "name": "get_policy_rules",
             "description": (
-                "Retrieve the canonical structured procurement policy for a spend "
-                "category or a policy ID. Provide exactly one of them."
+                "Retrieve the canonical structured policy governing the transaction "
+                "under assessment, so that you can explain the outcome in terms of its "
+                "rules. Takes no arguments — the policy follows from the transaction."
             ),
-            "inputSchema": {
-                "json": {
-                    "type": "object",
-                    "properties": {
-                        "category": {"type": "string", "description": "e.g. software"},
-                        "policy_id": {
-                            "type": "string",
-                            "description": "e.g. SOFTWARE_PROCUREMENT",
-                        },
-                    },
-                }
-            },
+            "inputSchema": {"json": {"type": "object", "properties": {}}},
         }
     },
     {
@@ -90,9 +76,9 @@ SYSTEM_PROMPT = """You are the orchestration component of a procurement-policy c
 
 Use the provided tools to retrieve the transaction under assessment, retrieve structured policy rules and request deterministic policy evaluation.
 
-The transaction under assessment is fixed by the request, and the policy governing it follows from that transaction. You choose neither, so never pass a transaction ID or a policy ID to evaluate_transaction.
+The transaction under assessment is fixed by the request, and the policy governing it follows from that transaction. You choose neither. None of the tools take arguments — call them with an empty object.
 
-Use get_policy_rules to read the applicable rules so that you can explain the outcome. It does not influence the decision.
+Use get_policy_rules to read the applicable rules so that you can explain the outcome in terms of them. It does not influence the decision.
 
 You are not authorised to independently approve or block transactions.
 
@@ -125,12 +111,27 @@ def _bedrock_client():
     return boto3.client("bedrock-runtime", region_name=os.environ["AWS_REGION"])
 
 
+def _bind(name: str, transaction_id: str) -> dict[str, Any]:
+    """Build a tool's arguments from the request, without reference to the model.
+
+    Every argument any tool receives is produced here. transaction_id comes from the
+    caller, and the governing policy's category is read off that transaction — so
+    neither the subject of an assessment nor the rules it is judged against can be
+    chosen by the model.
+    """
+    if name in ("get_transaction", "evaluate_transaction"):
+        return {"transaction_id": transaction_id}
+    if name == "get_policy_rules":
+        return {"category": get_transaction(transaction_id)["category"]}
+    return {}
+
+
 def _run_tool(name: str, arguments: Any, transaction_id: str) -> dict[str, Any]:
     """Validate a model-requested tool call, then execute the allowlisted function.
 
-    transaction_id comes from the caller's request, not from the model. It is bound
-    here rather than accepted as an argument, so an assessment can only ever concern
-    the transaction that was actually asked about.
+    The model chooses which capability to invoke and when. It supplies no arguments
+    to any of them; `arguments` is validated to be empty and then discarded in favour
+    of the bound values.
     """
     if name not in TOOL_HANDLERS:
         raise ValueError(f"'{name}' is not an available tool.")
@@ -141,14 +142,11 @@ def _run_tool(name: str, arguments: Any, transaction_id: str) -> dict[str, Any]:
     if unexpected:
         raise ValueError(
             f"'{name}' does not accept {sorted(unexpected)}. "
-            "The transaction under assessment and all authoritative values are "
-            "supplied server-side."
+            "It takes no arguments; the transaction under assessment and everything "
+            "that follows from it are supplied server-side."
         )
 
-    if name in BOUND_ARGUMENTS:
-        arguments = {**arguments, "transaction_id": transaction_id}
-
-    return TOOL_HANDLERS[name](**arguments)
+    return TOOL_HANDLERS[name](**_bind(name, transaction_id))
 
 
 def assess(transaction_id: str, question: str) -> AgentResult:

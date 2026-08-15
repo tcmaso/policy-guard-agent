@@ -77,9 +77,8 @@ Foundation model via Amazon Bedrock (Converse API, Boto3)
 2. If `stopReason` is not `tool_use`, the model has finished — return its text.
 3. Otherwise, for each `toolUse` block the model emitted:
    - check the tool name against the `TOOL_HANDLERS` allowlist;
-   - check the argument names against the `TOOL_ARGUMENTS` allowlist;
-   - bind `transaction_id` from the request, for the tools in `BOUND_ARGUMENTS`;
-     `evaluate_transaction` receives only this, and derives the policy itself;
+   - check that it supplied no arguments, against the `TOOL_ARGUMENTS` allowlist;
+   - build the real arguments in `_bind`, from the request;
    - execute the corresponding Python function;
    - append the result as a `toolResult` block.
 
@@ -100,29 +99,34 @@ invoke*. Python decides *whether the transaction complies*. That split matters f
   be reproduced, diffed and explained years later; a model's reasoning cannot.
 - **Testability.** The compliance logic is covered by `pytest` with no network calls,
   no credentials and no non-determinism.
-- **Integrity.** `evaluate_transaction` accepts **nothing from the model at all**. Its
-  argument allowlist is empty. The transaction under assessment is bound server-side
-  from the request, the governing policy is derived from that transaction's category,
-  and both canonical records are reloaded inside the evaluator. There is no input
-  through which the model can influence the outcome, and there are tests for each
-  thing it might otherwise have tried to supply.
+- **Integrity.** **The model supplies no argument to any tool.** All three argument
+  allowlists are empty and all three input schemas advertise no properties. Every
+  argument the tools receive is built in `_bind` from the caller's request: the
+  transaction ID comes from the request, and the policy category is read off that
+  transaction. Anything the model does send is refused rather than silently dropped,
+  so the attempt appears in the trace.
 
-The third point took two passes to get right, and the intermediate state is the more
-instructive one. Constraining what the model may pass is not the same as constraining
-what it may pass it *about*. Two arguments had to go:
+That last point arrived in three passes, and the intermediate states are the
+instructive part. Constraining what the model may pass is not the same as
+constraining what it may pass it *about*. Three arguments had to go:
 
 - **`transaction_id`.** Had it stayed model-supplied, a model naming a different
   transaction would have produced a genuine evaluation of the wrong record, returned
   under the requested ID — a mislabelled decision, not an obvious error.
 - **`policy_id`.** A caller who chooses the policy chooses the rules. Nothing in this
-  dataset currently permits shopping for a favourable one, because each category has
-  exactly one policy and a mismatched category was refused — but that is a property of
-  the data, not a guarantee of the design. Adding a second, laxer `software` policy
-  would have silently opened it.
+  dataset permitted shopping for a favourable one, because each category has exactly
+  one policy — but that is a property of the data, not a guarantee of the design.
+  A second, laxer `software` policy would have silently opened it.
+- **`category`**, on the policy lookup. Harmless to the decision, which derives its
+  own policy regardless. Removed for consistency: an allowlist with one live entry
+  invites the question of why that entry is the exception.
 
-Both follow from the same rule: **if a value can be computed deterministically, the
-model should not be the one to supply it.** What is left for the model to choose is
-the sequence of calls, which is exactly the part with no bearing on the answer.
+All three follow from one rule: **if a value can be computed deterministically, the
+model should not be the one to supply it.** What remains for the model to choose is
+the sequence of calls and when to stop — the part with no bearing on the answer.
+
+`test_no_tool_accepts_any_model_supplied_argument` pins the invariant, so adding a
+tool with a model-suppliable argument fails the suite and has to be argued for.
 
 The decision returned by `POST /assess` is read from the evaluator's structured
 output, never parsed out of the model's prose. If the evaluator never ran, the API

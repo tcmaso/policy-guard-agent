@@ -3,7 +3,7 @@
 import pytest
 
 import tools
-from agent import TOOL_ARGUMENTS, TOOL_HANDLERS, _run_tool
+from agent import TOOL_ARGUMENTS, TOOL_HANDLERS, TOOL_SPECS, _run_tool
 from tools import evaluate_transaction, get_policy_rules, get_transaction
 
 
@@ -69,19 +69,27 @@ def test_unknown_tool_name_is_refused():
         _run_tool("os.system", {"cmd": "whoami"}, "TX-1001")
 
 
+def test_no_tool_accepts_any_model_supplied_argument():
+    # The invariant the whole design rests on. If a future tool is added with a
+    # model-suppliable argument, this fails and the decision has to be justified.
+    assert all(allowed == set() for allowed in TOOL_ARGUMENTS.values())
+
+
 @pytest.mark.parametrize(
-    "smuggled",
+    ("tool", "smuggled"),
     [
-        {"security_review_completed": True},  # a value the decision turns on
-        {"transaction_id": "TX-1002"},  # a different subject
-        {"policy_id": "HARDWARE_PROCUREMENT"},  # a more favourable policy
+        ("evaluate_transaction", {"security_review_completed": True}),  # a decisive value
+        ("evaluate_transaction", {"transaction_id": "TX-1002"}),  # a different subject
+        ("evaluate_transaction", {"policy_id": "HARDWARE_PROCUREMENT"}),  # laxer rules
+        ("get_policy_rules", {"category": "hardware"}),  # rules for another category
+        ("get_policy_rules", {"policy_id": "HARDWARE_PROCUREMENT"}),
+        ("get_transaction", {"transaction_id": "TX-1002"}),  # someone else's record
     ],
 )
-def test_evaluator_accepts_no_model_supplied_arguments(smuggled):
-    # The evaluator's allowlist is empty, so every one of these is refused rather
-    # than silently ignored — the attempt is visible in the trace.
+def test_model_supplied_arguments_are_refused(tool, smuggled):
+    # Refused, not silently ignored, so the attempt is visible in the trace.
     with pytest.raises(ValueError, match="does not accept"):
-        _run_tool("evaluate_transaction", smuggled, "TX-1001")
+        _run_tool(tool, smuggled, "TX-1001")
 
 
 def test_bound_transaction_id_is_the_one_evaluated():
@@ -91,15 +99,21 @@ def test_bound_transaction_id_is_the_one_evaluated():
 
 
 def test_bound_transaction_id_is_supplied_to_lookups():
-    # get_transaction takes no model-supplied arguments at all.
     assert _run_tool("get_transaction", {}, "TX-1002")["transaction_id"] == "TX-1002"
 
 
-def test_policy_lookup_cannot_influence_the_decision():
-    # The model may read any policy it likes; the evaluator still derives its own.
-    _run_tool("get_policy_rules", {"policy_id": "HARDWARE_PROCUREMENT"}, "TX-1001")
-    assert _run_tool("evaluate_transaction", {}, "TX-1001")["policy_id"] == "SOFTWARE_PROCUREMENT"
+def test_policy_lookup_follows_the_bound_transaction():
+    # The model cannot ask for a policy; it receives the governing one.
+    assert _run_tool("get_policy_rules", {}, "TX-1001")["policy_id"] == "SOFTWARE_PROCUREMENT"
+    assert _run_tool("get_policy_rules", {}, "TX-1003")["policy_id"] == "CONSULTING_PROCUREMENT"
 
 
 def test_allowlists_stay_in_step():
     assert set(TOOL_HANDLERS) == set(TOOL_ARGUMENTS)
+
+
+def test_schemas_advertise_nothing_the_allowlist_would_refuse():
+    for spec in TOOL_SPECS:
+        tool = spec["toolSpec"]
+        advertised = set(tool["inputSchema"]["json"].get("properties", {}))
+        assert advertised <= TOOL_ARGUMENTS[tool["name"]], tool["name"]
