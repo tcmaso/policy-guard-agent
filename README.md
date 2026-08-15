@@ -65,7 +65,8 @@ Foundation model via Amazon Bedrock (Converse API, Boto3)
 | --------------- | ---------------------------------------------------------- |
 | `app.py`        | FastAPI endpoints, request validation, HTTP status mapping |
 | `agent.py`      | The Bedrock Converse tool loop, tool validation, dispatch  |
-| `tools.py`      | Synthetic data, the three tools, the authoritative evaluator |
+| `tools.py`      | The three tools and the authoritative evaluator            |
+| `data.py`       | Synthetic transactions and structured policies             |
 | `test_tools.py` | Tests for the evaluator and the guardrails (no AWS needed) |
 
 ## The manual tool-use loop
@@ -169,8 +170,19 @@ Response:
 ```
 
 Set `"include_trace": true` on the request to additionally receive `system_prompt`
-and `trace` — one entry per executed tool call, with the arguments the model supplied
-and the output Python returned. Omitted entirely when not requested. This is the
+and `trace`. Each entry is one executed tool call, and it deliberately keeps the two
+halves of that call apart:
+
+| Field | Origin |
+| ----------- | ------------------------------------------------------------- |
+| `tool` | The model — the one thing it chooses |
+| `requested` | The model — its `toolUse` block verbatim, `input` always `{}` |
+| `bound` | The service, from the request |
+| `output` | Python |
+
+Keeping `requested` and `bound` as separate fields is the point. The model's real
+contribution is the *name* it selected; the empty `input` inside its block is the
+guarantee, restated once per call. Omitted entirely when not requested. This is the
 audit record, and it is what the demo console renders.
 
 | Status | Meaning                                        |
@@ -274,13 +286,17 @@ served at `GET /ui`. Pick a transaction, edit the prompt, and it shows one full
 agent run:
 
 - the **system prompt** and the user turn actually sent to the foundation model;
-- every **tool call in order**, with the arguments the model chose and the JSON Python
-  returned, colour-coded by which side produced it;
+- the **orchestration** — the sequence of capabilities the model chose, which is its
+  only real freedom;
+- every **tool call in order**, split three ways and colour-coded by origin: what the
+  model sent (nothing), what the service bound from the request, and what Python
+  returned;
 - the **authoritative decision**, rendered from `evaluate_transaction`'s output and
   labelled as such, next to the model's explanation labelled *presentation only*.
 
 The point it makes visually: the badge and the prose come from two different places,
-and only one of them is authoritative.
+and only one of them is authoritative. The empty `requested` object on every call is
+the second point — the model picks the capability and supplies nothing to it.
 
 `GET /ui` is a demonstration route, not part of the compliance API. Deleting
 `demo.html` and the four-line `ui()` handler at the bottom of `app.py` returns the
@@ -301,7 +317,9 @@ Four transactions and three structured policies, all fictional:
 
 Deliberately **not** implemented here, but required for a real deployment:
 
-- **Persistent data stores** for transactions and policies, replacing the in-memory dictionaries.
+- **Persistent data stores** for transactions and policies, replacing the in-memory
+  dictionaries in `data.py`. Keeping them behind the two lookup functions in `tools.py`
+  is what makes that a contained change.
 - **Authentication and authorisation** on `/assess`, with per-caller entitlements.
 - **Audit logging** of every request, tool call, evaluator input and decision, in immutable storage.
 - **Policy versioning**, so a decision can be replayed against the policy in force at the time.

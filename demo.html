@@ -43,7 +43,11 @@
          padding: 2px 7px; border-radius: 4px; margin-left: 8px; vertical-align: 1px; }
   .tag.model { background: rgba(199,140,232,.16); color: var(--model); }
   .tag.python { background: rgba(79,209,165,.16); color: var(--python); }
+  .tag.bound { background: rgba(110,168,254,.16); color: var(--accent); }
   .tag.auth  { background: rgba(244,86,74,.16); color: var(--block); }
+  .seq { font-family: var(--mono); font-size: 13px; margin: 0 0 4px; }
+  .seq .call { color: var(--model); }
+  .seq .arrow { color: var(--muted); margin: 0 7px; }
   .verdict { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
   .badge { font-size: 26px; font-weight: 700; letter-spacing: .04em;
            padding: 10px 24px; border-radius: 9px; }
@@ -89,6 +93,7 @@
 
   <div class="legend">
     <span><span class="dot" style="background:var(--model)"></span>Foundation model decided this</span>
+    <span><span class="dot" style="background:var(--accent)"></span>Bound from the request, not the model</span>
     <span><span class="dot" style="background:var(--python)"></span>Deterministic Python produced this</span>
   </div>
 
@@ -108,6 +113,9 @@
     </div>
 
     <div class="panel">
+      <label>Orchestration — the sequence the model chose</label>
+      <p class="seq" id="seq"></p>
+      <p class="note" style="margin:0 0 18px">This ordering is the model's only real freedom. It picks which capabilities to invoke and when to stop; it supplies no arguments to any of them.</p>
       <label>Agent loop — tool calls in order</label>
       <div id="steps"></div>
     </div>
@@ -158,8 +166,14 @@ $('run').onclick = async () => {
     $('reasons').innerHTML = (evalStep?.output?.reasons ?? [])
       .map(r => `<li>${esc(r)}</li>`).join('');
 
+    $('seq').innerHTML = data.trace.length
+      ? data.trace.map(s => `<span class="call">${esc(s.tool)}()</span>`)
+          .join('<span class="arrow">→</span>')
+      : '<span class="note">no tools called</span>';
+
     $('steps').innerHTML = data.trace.map(s => {
       const authoritative = s.tool === 'evaluate_transaction';
+      const sent = Object.keys((s.requested || {}).input || {}).length;
       return `
         <div class="step ${authoritative ? 'python' : 'model'}">
           <h3>Round ${s.round} · ${esc(s.tool)}
@@ -169,9 +183,15 @@ $('run').onclick = async () => {
             ${s.status === 'error' ? '<span class="tag auth">error</span>' : ''}
           </h3>
           <p class="note" style="margin:6px 0 0">
-            <span class="tag model">Model</span> requested this tool with:
+            <span class="tag model">Model</span> emitted this tool-use block${sent
+              ? ' — note the arguments it tried to send:'
+              : '. It selected the name; <code>input</code> is empty because it has no arguments to give.'}
           </p>
-          <pre>${esc(json(s.input))}</pre>
+          <pre>${esc(json(s.requested))}</pre>
+          <p class="note" style="margin:10px 0 0">
+            <span class="tag bound">Bound</span> arguments supplied by the service, from the request:
+          </p>
+          <pre>${esc(json(s.bound))}</pre>
           <p class="note" style="margin:10px 0 0">
             <span class="tag python">Python</span> returned:
           </p>

@@ -205,11 +205,18 @@ def assess(transaction_id: str, question: str) -> AgentResult:
             except (LookupError, ValueError, TypeError) as exc:
                 output = {"error": str(exc)}
                 status = "error"
+            # The audit record keeps the two halves of a call apart: what the model
+            # emitted, and what the service supplied. `requested` is the toolUse block
+            # verbatim — the model's real contribution is the name it selected, and
+            # the empty `input` inside it is the guarantee, restated once per call.
             trace.append(
                 {
                     "round": round_number,
                     "tool": call["name"],
-                    "input": call["input"],
+                    "requested": call,
+                    "bound": _bind(call["name"], transaction_id)
+                    if call["name"] in TOOL_HANDLERS
+                    else {},
                     "status": status,
                     "output": output,
                 }
