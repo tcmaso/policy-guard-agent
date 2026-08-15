@@ -25,26 +25,28 @@ TOOL_HANDLERS = {
 
 # Explicit argument allowlist. This is what stops the model passing an amount or a
 # security-review flag into the authoritative evaluator.
+#
+# transaction_id appears in neither entry on purpose. The subject of the assessment
+# is fixed by the caller's request and injected in _run_tool, so the model has no way
+# to express a different transaction — not even the one it was asked about.
 TOOL_ARGUMENTS = {
-    "get_transaction": {"transaction_id"},
+    "get_transaction": set(),
     "get_policy_rules": {"category", "policy_id"},
-    "evaluate_transaction": {"transaction_id", "policy_id"},
+    "evaluate_transaction": {"policy_id"},
 }
+
+# Arguments bound server-side from the request, never from the model.
+BOUND_ARGUMENTS = {"get_transaction", "evaluate_transaction"}
 
 TOOL_SPECS = [
     {
         "toolSpec": {
             "name": "get_transaction",
-            "description": "Retrieve the canonical procurement transaction record by ID.",
-            "inputSchema": {
-                "json": {
-                    "type": "object",
-                    "properties": {
-                        "transaction_id": {"type": "string", "description": "e.g. TX-1001"}
-                    },
-                    "required": ["transaction_id"],
-                }
-            },
+            "description": (
+                "Retrieve the canonical record for the transaction under assessment. "
+                "Takes no arguments — the transaction is fixed by the request."
+            ),
+            "inputSchema": {"json": {"type": "object", "properties": {}}},
         }
     },
     {
@@ -72,18 +74,16 @@ TOOL_SPECS = [
         "toolSpec": {
             "name": "evaluate_transaction",
             "description": (
-                "Authoritative compliance evaluation. Returns APPROVE, BLOCK or REVIEW. "
-                "Takes identifiers only — it reloads the transaction and the policy "
-                "itself, so do not pass amounts, review status or any other values."
+                "Authoritative compliance evaluation of the transaction under assessment. "
+                "Returns APPROVE, BLOCK or REVIEW. Takes the policy ID only — the "
+                "transaction is fixed by the request, and the evaluator reloads both "
+                "records itself, so do not pass amounts, review status or any other values."
             ),
             "inputSchema": {
                 "json": {
                     "type": "object",
-                    "properties": {
-                        "transaction_id": {"type": "string"},
-                        "policy_id": {"type": "string"},
-                    },
-                    "required": ["transaction_id", "policy_id"],
+                    "properties": {"policy_id": {"type": "string"}},
+                    "required": ["policy_id"],
                 }
             },
         }
@@ -92,7 +92,9 @@ TOOL_SPECS = [
 
 SYSTEM_PROMPT = """You are the orchestration component of a procurement-policy compliance service.
 
-Use the provided tools to retrieve transactions, retrieve structured policy rules and request deterministic policy evaluation.
+Use the provided tools to retrieve the transaction under assessment, retrieve structured policy rules and request deterministic policy evaluation.
+
+The transaction under assessment is fixed by the request. You do not choose it and cannot change it, so never pass a transaction ID to any tool.
 
 You are not authorised to independently approve or block transactions.
 
@@ -125,8 +127,13 @@ def _bedrock_client():
     return boto3.client("bedrock-runtime", region_name=os.environ["AWS_REGION"])
 
 
-def _run_tool(name: str, arguments: Any) -> dict[str, Any]:
-    """Validate a model-requested tool call, then execute the allowlisted function."""
+def _run_tool(name: str, arguments: Any, transaction_id: str) -> dict[str, Any]:
+    """Validate a model-requested tool call, then execute the allowlisted function.
+
+    transaction_id comes from the caller's request, not from the model. It is bound
+    here rather than accepted as an argument, so an assessment can only ever concern
+    the transaction that was actually asked about.
+    """
     if name not in TOOL_HANDLERS:
         raise ValueError(f"'{name}' is not an available tool.")
     if not isinstance(arguments, dict):
@@ -136,8 +143,12 @@ def _run_tool(name: str, arguments: Any) -> dict[str, Any]:
     if unexpected:
         raise ValueError(
             f"'{name}' does not accept {sorted(unexpected)}. "
-            "Pass identifiers only; authoritative values are loaded server-side."
+            "The transaction under assessment and all authoritative values are "
+            "supplied server-side."
         )
+
+    if name in BOUND_ARGUMENTS:
+        arguments = {**arguments, "transaction_id": transaction_id}
 
     return TOOL_HANDLERS[name](**arguments)
 
@@ -185,13 +196,17 @@ def assess(transaction_id: str, question: str) -> AgentResult:
             if "toolUse" not in block:
                 continue
             call = block["toolUse"]
-            tools_used.append(call["name"])
             try:
-                output = _run_tool(call["name"], call["input"])
+                output = _run_tool(call["name"], call["input"], transaction_id)
                 status = "success"
+                # Only record a tool as used once it has actually run.
+                tools_used.append(call["name"])
                 if call["name"] == "evaluate_transaction":
                     evaluation = output
-            except (LookupError, ValueError) as exc:
+            # TypeError covers a malformed call, e.g. a required argument omitted.
+            # Feeding it back as a tool result lets the model correct itself, rather
+            # than escaping the loop as an unhandled 500.
+            except (LookupError, ValueError, TypeError) as exc:
                 output = {"error": str(exc)}
                 status = "error"
             trace.append(

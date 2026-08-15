@@ -78,8 +78,12 @@ Foundation model via Amazon Bedrock (Converse API, Boto3)
 3. Otherwise, for each `toolUse` block the model emitted:
    - check the tool name against the `TOOL_HANDLERS` allowlist;
    - check the argument names against the `TOOL_ARGUMENTS` allowlist;
+   - bind `transaction_id` from the request, for the tools in `BOUND_ARGUMENTS`;
    - execute the corresponding Python function;
    - append the result as a `toolResult` block.
+
+A tool that raises is not an exception path — the error is returned to the model as
+the tool result, so it can correct itself on the next round.
 4. Send the results back and repeat, up to `MAX_TOOL_ROUNDS = 5`.
 
 Nothing the model produces is ever executed as code. There is no `eval()`, no
@@ -95,10 +99,19 @@ invoke*. Python decides *whether the transaction complies*. That split matters f
   be reproduced, diffed and explained years later; a model's reasoning cannot.
 - **Testability.** The compliance logic is covered by `pytest` with no network calls,
   no credentials and no non-determinism.
-- **Integrity.** `evaluate_transaction` accepts **identifiers only**. It reloads the
-  canonical transaction and policy itself, so the model cannot supply the amount or
-  the security-review flag that the decision turns on. The argument allowlist rejects
-  any attempt to pass one, and there is a test for exactly that.
+- **Integrity.** `evaluate_transaction` accepts **a policy ID only**. The transaction
+  under assessment is bound server-side from the request, and the evaluator reloads
+  both canonical records itself, so the model can supply neither the amount and
+  security-review flag that the decision turns on, nor the transaction it applies to.
+  The argument allowlist rejects any attempt to pass one, and there are tests for
+  exactly that.
+
+The second point is worth stating separately, because it is the one most agent
+designs miss. Constraining what the model may pass is not the same as constraining
+what it may pass it *about*. Had `transaction_id` remained a model-supplied argument,
+a model that named a different transaction would have produced a genuine evaluation
+of the wrong record, returned under the requested ID. Binding the subject of the
+assessment to the request makes that unrepresentable rather than merely detectable.
 
 The decision returned by `POST /assess` is read from the evaluator's structured
 output, never parsed out of the model's prose. If the evaluator never ran, the API
