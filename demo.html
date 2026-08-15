@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PolicyGuard Agent — demo console</title>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #171a22; --line: #262b36; --text: #e6e8ee;
+    --muted: #8b93a5; --accent: #6ea8fe; --model: #c78ce8; --python: #4fd1a5;
+    --approve: #3fb950; --block: #f4564a; --review: #e3a008; --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 32px 20px 80px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 28px; font-size: 14px; }
+  .panel { background: var(--panel); border: 1px solid var(--line);
+           border-radius: 10px; padding: 18px; margin-bottom: 18px; }
+  label { display: block; font-size: 12px; text-transform: uppercase;
+          letter-spacing: .06em; color: var(--muted); margin-bottom: 6px; }
+  select, input, button { font: inherit; border-radius: 7px; border: 1px solid var(--line);
+           background: #0d0f15; color: var(--text); padding: 9px 11px; }
+  input, select { width: 100%; }
+  .row { display: grid; grid-template-columns: 220px 1fr auto; gap: 14px; align-items: end; }
+  button { background: var(--accent); color: #06101f; border: 0; font-weight: 600;
+           padding: 10px 22px; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  details { margin-top: 14px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  pre { font-family: var(--mono); font-size: 12.5px; background: #0d0f15;
+        border: 1px solid var(--line); border-radius: 7px; padding: 11px;
+        overflow-x: auto; margin: 8px 0 0; white-space: pre-wrap; word-break: break-word; }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12.5px;
+            color: var(--muted); margin-bottom: 18px; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+  .step { border-left: 3px solid var(--line); padding: 2px 0 2px 16px; margin-bottom: 16px; }
+  .step.model { border-left-color: var(--model); }
+  .step.python { border-left-color: var(--python); }
+  .step h3 { margin: 0; font-size: 14px; font-family: var(--mono); }
+  .tag { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+         padding: 2px 7px; border-radius: 4px; margin-left: 8px; vertical-align: 1px; }
+  .tag.model { background: rgba(199,140,232,.16); color: var(--model); }
+  .tag.python { background: rgba(79,209,165,.16); color: var(--python); }
+  .tag.auth  { background: rgba(244,86,74,.16); color: var(--block); }
+  .verdict { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+  .badge { font-size: 26px; font-weight: 700; letter-spacing: .04em;
+           padding: 10px 24px; border-radius: 9px; }
+  .APPROVE { background: rgba(63,185,80,.14); color: var(--approve); }
+  .BLOCK   { background: rgba(244,86,74,.14); color: var(--block); }
+  .REVIEW  { background: rgba(227,160,8,.14); color: var(--review); }
+  .note { font-size: 12.5px; color: var(--muted); }
+  .err { color: var(--block); }
+  ul.reasons { margin: 10px 0 0; padding-left: 20px; font-size: 13.5px; }
+  .explain { white-space: pre-wrap; font-size: 14px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>PolicyGuard Agent</h1>
+  <p class="sub">The foundation model orchestrates and explains. Python decides. This console shows every step of one <code>POST /assess</code> call.</p>
+
+  <div class="panel">
+    <div class="row">
+      <div>
+        <label for="tx">Transaction</label>
+        <select id="tx">
+          <option value="TX-1001">TX-1001 — software, £75,000</option>
+          <option value="TX-1002">TX-1002 — software, £12,000</option>
+          <option value="TX-1003">TX-1003 — consulting, £60,000</option>
+          <option value="TX-1004">TX-1004 — hardware, £8,500</option>
+          <option value="TX-9999">TX-9999 — does not exist</option>
+        </select>
+      </div>
+      <div>
+        <label for="q">Your prompt (sent to the foundation model as the user turn)</label>
+        <input id="q" value="Can this purchase be approved?">
+      </div>
+      <button id="run">Run agent</button>
+    </div>
+    <details>
+      <summary>System prompt &amp; available tools</summary>
+      <pre id="sys">Run an assessment to load the system prompt from the server.</pre>
+    </details>
+  </div>
+
+  <div class="legend">
+    <span><span class="dot" style="background:var(--model)"></span>Foundation model decided this</span>
+    <span><span class="dot" style="background:var(--python)"></span>Deterministic Python produced this</span>
+  </div>
+
+  <div id="status" class="panel note">Idle.</div>
+
+  <div id="out" class="hidden">
+    <div class="panel">
+      <label>Authoritative decision — from <code>tools.evaluate_transaction</code></label>
+      <div class="verdict">
+        <span id="badge" class="badge"></span>
+        <div>
+          <div id="policy" class="note"></div>
+          <ul id="reasons" class="reasons"></ul>
+        </div>
+      </div>
+      <p class="note" style="margin-bottom:0">The foundation model cannot change this value. The API reads it from the evaluator's structured output, never from the text below.</p>
+    </div>
+
+    <div class="panel">
+      <label>Agent loop — tool calls in order</label>
+      <div id="steps"></div>
+    </div>
+
+    <div class="panel">
+      <label>Foundation model explanation — presentation only</label>
+      <div id="explain" class="explain"></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const json = o => JSON.stringify(o, null, 2);
+
+$('run').onclick = async () => {
+  const btn = $('run');
+  btn.disabled = true;
+  $('out').classList.add('hidden');
+  $('status').className = 'panel note';
+  $('status').textContent = 'Calling POST /assess — the foundation model is choosing tools…';
+
+  try {
+    const res = await fetch('/assess', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: json({ transaction_id: $('tx').value, question: $('q').value, include_trace: true })
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      $('status').className = 'panel err';
+      $('status').textContent = `HTTP ${res.status} — ${data.detail ?? 'request failed'}`;
+      return;
+    }
+
+    $('status').textContent = `Completed in ${data.trace.length} tool call(s).`;
+    $('sys').textContent = data.system_prompt;
+
+    $('badge').textContent = data.decision;
+    $('badge').className = 'badge ' + data.decision;
+    $('policy').textContent = data.policy_id ? `Policy: ${data.policy_id}` : 'No policy evaluated.';
+
+    // Reasons come from the evaluator's own output in the trace, not from the model.
+    const evalStep = data.trace.filter(s => s.tool === 'evaluate_transaction').pop();
+    $('reasons').innerHTML = (evalStep?.output?.reasons ?? [])
+      .map(r => `<li>${esc(r)}</li>`).join('');
+
+    $('steps').innerHTML = data.trace.map(s => {
+      const authoritative = s.tool === 'evaluate_transaction';
+      return `
+        <div class="step ${authoritative ? 'python' : 'model'}">
+          <h3>Round ${s.round} · ${esc(s.tool)}
+            <span class="tag ${authoritative ? 'auth' : 'model'}">
+              ${authoritative ? 'authoritative decision' : 'lookup'}
+            </span>
+            ${s.status === 'error' ? '<span class="tag auth">error</span>' : ''}
+          </h3>
+          <p class="note" style="margin:6px 0 0">
+            <span class="tag model">Model</span> requested this tool with:
+          </p>
+          <pre>${esc(json(s.input))}</pre>
+          <p class="note" style="margin:10px 0 0">
+            <span class="tag python">Python</span> returned:
+          </p>
+          <pre>${esc(json(s.output))}</pre>
+        </div>`;
+    }).join('') || '<p class="note">The foundation model answered without calling any tool.</p>';
+
+    $('explain').textContent = data.explanation;
+    $('out').classList.remove('hidden');
+
+  } catch (err) {
+    $('status').className = 'panel err';
+    $('status').textContent = 'Could not reach the API. Is uvicorn running? ' + err;
+  } finally {
+    btn.disabled = false;
+  }
+};
+</script>
+</body>
+</html>
