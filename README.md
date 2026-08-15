@@ -79,6 +79,7 @@ Foundation model via Amazon Bedrock (Converse API, Boto3)
    - check the tool name against the `TOOL_HANDLERS` allowlist;
    - check the argument names against the `TOOL_ARGUMENTS` allowlist;
    - bind `transaction_id` from the request, for the tools in `BOUND_ARGUMENTS`;
+     `evaluate_transaction` receives only this, and derives the policy itself;
    - execute the corresponding Python function;
    - append the result as a `toolResult` block.
 
@@ -99,19 +100,29 @@ invoke*. Python decides *whether the transaction complies*. That split matters f
   be reproduced, diffed and explained years later; a model's reasoning cannot.
 - **Testability.** The compliance logic is covered by `pytest` with no network calls,
   no credentials and no non-determinism.
-- **Integrity.** `evaluate_transaction` accepts **a policy ID only**. The transaction
-  under assessment is bound server-side from the request, and the evaluator reloads
-  both canonical records itself, so the model can supply neither the amount and
-  security-review flag that the decision turns on, nor the transaction it applies to.
-  The argument allowlist rejects any attempt to pass one, and there are tests for
-  exactly that.
+- **Integrity.** `evaluate_transaction` accepts **nothing from the model at all**. Its
+  argument allowlist is empty. The transaction under assessment is bound server-side
+  from the request, the governing policy is derived from that transaction's category,
+  and both canonical records are reloaded inside the evaluator. There is no input
+  through which the model can influence the outcome, and there are tests for each
+  thing it might otherwise have tried to supply.
 
-The second point is worth stating separately, because it is the one most agent
-designs miss. Constraining what the model may pass is not the same as constraining
-what it may pass it *about*. Had `transaction_id` remained a model-supplied argument,
-a model that named a different transaction would have produced a genuine evaluation
-of the wrong record, returned under the requested ID. Binding the subject of the
-assessment to the request makes that unrepresentable rather than merely detectable.
+The third point took two passes to get right, and the intermediate state is the more
+instructive one. Constraining what the model may pass is not the same as constraining
+what it may pass it *about*. Two arguments had to go:
+
+- **`transaction_id`.** Had it stayed model-supplied, a model naming a different
+  transaction would have produced a genuine evaluation of the wrong record, returned
+  under the requested ID — a mislabelled decision, not an obvious error.
+- **`policy_id`.** A caller who chooses the policy chooses the rules. Nothing in this
+  dataset currently permits shopping for a favourable one, because each category has
+  exactly one policy and a mismatched category was refused — but that is a property of
+  the data, not a guarantee of the design. Adding a second, laxer `software` policy
+  would have silently opened it.
+
+Both follow from the same rule: **if a value can be computed deterministically, the
+model should not be the one to supply it.** What is left for the model to choose is
+the sequence of calls, which is exactly the part with no bearing on the answer.
 
 The decision returned by `POST /assess` is read from the evaluator's structured
 output, never parsed out of the model's prose. If the evaluator never ran, the API

@@ -2,36 +2,50 @@
 
 import pytest
 
+import tools
 from agent import TOOL_ARGUMENTS, TOOL_HANDLERS, _run_tool
 from tools import evaluate_transaction, get_policy_rules, get_transaction
 
 
 def test_compliant_transaction_is_approved():
-    result = evaluate_transaction("TX-1002", "SOFTWARE_PROCUREMENT")
+    result = evaluate_transaction("TX-1002")
     assert result["decision"] == "APPROVE"
 
 
 def test_policy_violation_is_blocked():
-    result = evaluate_transaction("TX-1001", "SOFTWARE_PROCUREMENT")
+    result = evaluate_transaction("TX-1001")
     assert result["decision"] == "BLOCK"
     assert any("security review" in reason for reason in result["reasons"])
 
 
 def test_missing_information_is_referred_for_review():
-    result = evaluate_transaction("TX-1003", "CONSULTING_PROCUREMENT")
+    result = evaluate_transaction("TX-1003")
     assert result["decision"] == "REVIEW"
     assert any("preferred_supplier" in reason for reason in result["reasons"])
 
 
 def test_rule_below_threshold_does_not_fire():
     # TX-1004 is not a preferred supplier but sits under the £10,000 threshold.
-    result = evaluate_transaction("TX-1004", "HARDWARE_PROCUREMENT")
+    result = evaluate_transaction("TX-1004")
     assert result["decision"] == "APPROVE"
 
 
-def test_mismatched_policy_category_is_referred_for_review():
-    result = evaluate_transaction("TX-1002", "HARDWARE_PROCUREMENT")
+def test_governing_policy_is_derived_from_the_transaction():
+    # The policy is not a caller's choice; it follows from the transaction's category.
+    assert evaluate_transaction("TX-1001")["policy_id"] == "SOFTWARE_PROCUREMENT"
+    assert evaluate_transaction("TX-1003")["policy_id"] == "CONSULTING_PROCUREMENT"
+    assert evaluate_transaction("TX-1004")["policy_id"] == "HARDWARE_PROCUREMENT"
+
+
+def test_uncovered_category_is_referred_for_review(monkeypatch):
+    monkeypatch.setitem(
+        tools.TRANSACTIONS,
+        "TX-8888",
+        {"transaction_id": "TX-8888", "category": "catering", "amount_gbp": 500},
+    )
+    result = evaluate_transaction("TX-8888")
     assert result["decision"] == "REVIEW"
+    assert result["policy_id"] is None
 
 
 def test_unknown_ids_are_rejected():
@@ -55,29 +69,23 @@ def test_unknown_tool_name_is_refused():
         _run_tool("os.system", {"cmd": "whoami"}, "TX-1001")
 
 
-def test_authoritative_values_cannot_be_injected():
-    # The foundation model may not smuggle a business value past the evaluator.
+@pytest.mark.parametrize(
+    "smuggled",
+    [
+        {"security_review_completed": True},  # a value the decision turns on
+        {"transaction_id": "TX-1002"},  # a different subject
+        {"policy_id": "HARDWARE_PROCUREMENT"},  # a more favourable policy
+    ],
+)
+def test_evaluator_accepts_no_model_supplied_arguments(smuggled):
+    # The evaluator's allowlist is empty, so every one of these is refused rather
+    # than silently ignored — the attempt is visible in the trace.
     with pytest.raises(ValueError, match="does not accept"):
-        _run_tool(
-            "evaluate_transaction",
-            {"policy_id": "SOFTWARE_PROCUREMENT", "security_review_completed": True},
-            "TX-1001",
-        )
-
-
-def test_transaction_under_assessment_cannot_be_changed():
-    # The subject of the assessment is bound from the request. Even naming the
-    # transaction is refused, so a different one cannot be substituted.
-    with pytest.raises(ValueError, match="does not accept"):
-        _run_tool(
-            "evaluate_transaction",
-            {"policy_id": "SOFTWARE_PROCUREMENT", "transaction_id": "TX-1002"},
-            "TX-1001",
-        )
+        _run_tool("evaluate_transaction", smuggled, "TX-1001")
 
 
 def test_bound_transaction_id_is_the_one_evaluated():
-    result = _run_tool("evaluate_transaction", {"policy_id": "SOFTWARE_PROCUREMENT"}, "TX-1001")
+    result = _run_tool("evaluate_transaction", {}, "TX-1001")
     assert result["transaction_id"] == "TX-1001"
     assert result["decision"] == "BLOCK"
 
@@ -87,11 +95,10 @@ def test_bound_transaction_id_is_supplied_to_lookups():
     assert _run_tool("get_transaction", {}, "TX-1002")["transaction_id"] == "TX-1002"
 
 
-def test_malformed_call_raises_a_handled_error():
-    # A missing required argument must surface as TypeError, which the agent loop
-    # catches and feeds back to the model rather than letting it become a 500.
-    with pytest.raises(TypeError):
-        _run_tool("evaluate_transaction", {}, "TX-1001")
+def test_policy_lookup_cannot_influence_the_decision():
+    # The model may read any policy it likes; the evaluator still derives its own.
+    _run_tool("get_policy_rules", {"policy_id": "HARDWARE_PROCUREMENT"}, "TX-1001")
+    assert _run_tool("evaluate_transaction", {}, "TX-1001")["policy_id"] == "SOFTWARE_PROCUREMENT"
 
 
 def test_allowlists_stay_in_step():

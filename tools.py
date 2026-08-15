@@ -167,27 +167,34 @@ def _check(clause: dict[str, Any], transaction: dict[str, Any]) -> bool | None:
     return OPERATORS[clause["operator"]](actual, clause.get("value"))
 
 
-def evaluate_transaction(transaction_id: str, policy_id: str) -> dict[str, Any]:
-    """Decide APPROVE, BLOCK or REVIEW for a transaction under a policy.
+def evaluate_transaction(transaction_id: str) -> dict[str, Any]:
+    """Decide APPROVE, BLOCK or REVIEW for a transaction.
 
-    Only IDs are accepted. The canonical transaction and policy are reloaded here,
-    so no caller — including the language model — can supply the amount, the
-    security-review status, or any other value the decision turns on.
+    Takes the transaction ID and nothing else, and that ID is itself bound from the
+    caller's request rather than supplied by the language model. Both the transaction
+    and the policy that governs it are derived here, so there is no input through
+    which any caller can influence the outcome: not the amount, not the
+    security-review status, and not the choice of policy to be judged against.
     """
     transaction = get_transaction(transaction_id)
-    policy = get_policy_rules(policy_id=policy_id)
 
-    if transaction["category"] != policy["category"]:
+    # The governing policy follows from the transaction's category. It is not a
+    # choice, so nothing is gained by letting a caller make it — and allowing one
+    # would permit shopping for the most favourable policy covering the category.
+    try:
+        policy = get_policy_rules(category=transaction["category"])
+    except LookupError:
         return {
             "transaction_id": transaction_id,
-            "policy_id": policy_id,
+            "policy_id": None,
             "decision": "REVIEW",
             "reasons": [
-                f"Policy {policy_id} covers '{policy['category']}' but the transaction "
-                f"is '{transaction['category']}'."
+                f"No procurement policy covers the '{transaction['category']}' "
+                "category, so this transaction cannot be assessed automatically."
             ],
         }
 
+    policy_id = policy["policy_id"]
     blocked: list[str] = []
     review: list[str] = []
 

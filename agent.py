@@ -26,13 +26,15 @@ TOOL_HANDLERS = {
 # Explicit argument allowlist. This is what stops the model passing an amount or a
 # security-review flag into the authoritative evaluator.
 #
-# transaction_id appears in neither entry on purpose. The subject of the assessment
-# is fixed by the caller's request and injected in _run_tool, so the model has no way
-# to express a different transaction — not even the one it was asked about.
+# The authoritative evaluator accepts nothing at all. Its transaction is bound from
+# the request in _run_tool, and the governing policy follows deterministically from
+# that transaction's category, so there is no input left for the model to influence.
+# get_policy_rules still takes model-chosen arguments, but it is a read-only lookup
+# that feeds the explanation, never the decision.
 TOOL_ARGUMENTS = {
     "get_transaction": set(),
     "get_policy_rules": {"category", "policy_id"},
-    "evaluate_transaction": {"policy_id"},
+    "evaluate_transaction": set(),
 }
 
 # Arguments bound server-side from the request, never from the model.
@@ -75,17 +77,11 @@ TOOL_SPECS = [
             "name": "evaluate_transaction",
             "description": (
                 "Authoritative compliance evaluation of the transaction under assessment. "
-                "Returns APPROVE, BLOCK or REVIEW. Takes the policy ID only — the "
-                "transaction is fixed by the request, and the evaluator reloads both "
-                "records itself, so do not pass amounts, review status or any other values."
+                "Returns APPROVE, BLOCK or REVIEW. Takes no arguments — the transaction "
+                "is fixed by the request and the governing policy follows from it. Call "
+                "this for the decision; never state one of your own."
             ),
-            "inputSchema": {
-                "json": {
-                    "type": "object",
-                    "properties": {"policy_id": {"type": "string"}},
-                    "required": ["policy_id"],
-                }
-            },
+            "inputSchema": {"json": {"type": "object", "properties": {}}},
         }
     },
 ]
@@ -94,7 +90,9 @@ SYSTEM_PROMPT = """You are the orchestration component of a procurement-policy c
 
 Use the provided tools to retrieve the transaction under assessment, retrieve structured policy rules and request deterministic policy evaluation.
 
-The transaction under assessment is fixed by the request. You do not choose it and cannot change it, so never pass a transaction ID to any tool.
+The transaction under assessment is fixed by the request, and the policy governing it follows from that transaction. You choose neither, so never pass a transaction ID or a policy ID to evaluate_transaction.
+
+Use get_policy_rules to read the applicable rules so that you can explain the outcome. It does not influence the decision.
 
 You are not authorised to independently approve or block transactions.
 
